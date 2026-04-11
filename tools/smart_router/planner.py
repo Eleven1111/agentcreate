@@ -31,7 +31,7 @@ class Planner:
         raw = llm([{"role": "user", "content": prompt}])
         try:
             plan = json.loads(raw)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Planner LLM 返回无效 JSON: {e}\nRaw: {raw[:200]}")
+        except (json.JSONDecodeError, TypeError) as e:
+            raise ValueError(f"Planner LLM 返回无效 JSON: {e}\nRaw: {str(raw)[:200]}")
         plan.setdefault("raw_request", message)
         return plan

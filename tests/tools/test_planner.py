@@ -44,6 +44,11 @@ class TestPlannerExtract:
         with pytest.raises(ValueError, match="无效 JSON"):
             Planner.extract("任意消息", llm)
 
+    def test_llm_returns_none_raises_value_error(self):
+        llm = make_llm(None)
+        with pytest.raises(ValueError, match="无效 JSON"):
+            Planner.extract("任意消息", llm)
+
     def test_prompt_contains_message(self):
         captured = []
         def llm(messages):
