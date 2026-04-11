@@ -2,7 +2,7 @@ import pytest
 from tools.smart_router.gate import Gate
 
 
-def make_llm(response: str):
+def make_llm(response):
     """返回一个固定响应的 mock llm callable。"""
     def llm(messages):
         return response
@@ -24,6 +24,10 @@ class TestGateClassify:
 
     def test_missing_complexity_key_returns_complex(self):
         llm = make_llm('{"reason": "没有 complexity 字段"}')
+        assert Gate.classify("任意消息", llm) == "complex"
+
+    def test_llm_returns_none_returns_complex(self):
+        llm = make_llm(None)
         assert Gate.classify("任意消息", llm) == "complex"
 
     def test_prompt_contains_message(self):

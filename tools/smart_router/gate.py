@@ -23,5 +23,5 @@ class Gate:
         try:
             data = json.loads(raw)
             return data.get("complexity", "complex")
-        except (json.JSONDecodeError, AttributeError):
+        except (json.JSONDecodeError, AttributeError, TypeError):
             return "complex"
