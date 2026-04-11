@@ -13,7 +13,8 @@
 - **简单请求** → 单次 LLM 调用直接回答（透传）
 - **复杂请求** → 意图分析 → 任务拆解 → 顺序执行 → 对齐验收 → 交付
 
-触发优先级设为 `lowest`，确保精确 skill（如 `execute-plan`）先匹配，兜底才走智能路由。
+触发优先级设为 `lowest`，确保精确 skill（如 `execute-plan`）先匹配，兜底才走智能路由。  
+⚠️ `priority: lowest` 需在实施时确认 OpenClaw trigger 字段的合法值，备选方案：`priority: 0` 或 `fallback: true`。
 
 ---
 
@@ -51,17 +52,21 @@ Gate.classify() — 1次 LLM 调用
 Planner.extract(text) → IntentPlan
 Executor.run_task() × N → results
 Validator.check(plan, results) → ValidationResult
-    → score ≥ 80 → 交付
+    → score ≥ 80 → _merge_results(results) → ctx.reply(final_answer)
     → score < 80 → 重跑 failed_tasks（最多 2 次）→ 再次 Validator
+
+# _merge_results：按 task 顺序拼接各子任务输出，加标题分隔，返回 str
 ```
 
 ### 状态机
 
 ```
-idle → analyzing → executing → validating → done
-                                    ↓（score < 80，retries < 2）
-                               executing（重跑失败子任务）
+idle → executing → validating → done
+           ↑            ↓（score < 80，retries < 2）
+           └────────────┘（重跑 failed_tasks）
 ```
+
+注：Planner 在 `idle` 阶段内联执行，不产生独立的 `analyzing` 状态。
 
 ---
 
