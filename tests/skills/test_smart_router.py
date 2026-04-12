@@ -63,6 +63,26 @@ class TestSimplePath:
         assert ctx.replies[0] == "✅ 已重置"
 
 
+    def test_load_converts_results_keys_to_int(self, tmp_path, monkeypatch):
+        """_load 将 JSON 反序列化后的 str 键转回 int，防止断点续跑时 results 查找失败。"""
+        import json
+        import skills.smart_router.smart_router as sr_module
+
+        state_dir = tmp_path / "smart-router"
+        state_dir.mkdir(parents=True)
+        state = {
+            "phase": "idle",
+            "results": {"1": "竞品分析结果", "2": "定价建议"},
+        }
+        (state_dir / "testuser.json").write_text(json.dumps(state))
+
+        monkeypatch.setattr(sr_module, "_DIALOG_DIR", state_dir)
+        loaded = sr_module._load("testuser")
+
+        assert loaded["results"] == {1: "竞品分析结果", 2: "定价建议"}
+        assert all(isinstance(k, int) for k in loaded["results"].keys())
+
+
 class TestComplexPath:
     def test_complex_request_goes_through_pipeline(self, tmp_path, monkeypatch):
         handle = get_handle(tmp_path, monkeypatch)
@@ -102,3 +122,23 @@ class TestComplexPath:
         ])
         handle("帮我分析竞品", "user3", ctx)
         assert any("已重试" in r for r in ctx.replies)
+
+    def test_done_phase_resets_and_handles_new_message(self, tmp_path, monkeypatch):
+        """done 阶段收到新消息时，自动重置并作为新请求处理，不再静默丢弃。"""
+        handle = get_handle(tmp_path, monkeypatch)
+
+        # 先完成一次完整流程，状态变为 done
+        ctx1 = MockCtx([
+            _COMPLEX_GATE,
+            _PLAN,
+            "竞品分析结果",
+            _PASS_VALIDATION,
+        ])
+        handle("帮我分析竞品", "user_done", ctx1)
+        assert any("验收通过" in r for r in ctx1.replies)
+
+        # 再次发送消息，此时状态为 done，应自动重置并处理新请求
+        ctx2 = MockCtx([_SIMPLE_GATE, "你好，有什么可以帮你？"])
+        handle("你好", "user_done", ctx2)
+        assert len(ctx2.replies) == 1
+        assert ctx2.replies[0] == "你好，有什么可以帮你？"

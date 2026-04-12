@@ -34,4 +34,12 @@ class Planner:
         except (json.JSONDecodeError, TypeError) as e:
             raise ValueError(f"Planner LLM 返回无效 JSON: {e}\nRaw: {str(raw)[:200]}")
         plan.setdefault("raw_request", message)
+
+        required = {"true_intent", "acceptance_criteria", "tasks"}
+        missing = required - plan.keys()
+        if missing:
+            raise ValueError(f"Planner LLM 返回 JSON 缺少必要字段：{missing}")
+        if not isinstance(plan.get("tasks"), list) or len(plan["tasks"]) == 0:
+            raise ValueError("Planner tasks 字段必须是非空列表")
+
         return plan

@@ -56,3 +56,13 @@ class TestPlannerExtract:
             return json.dumps(_VALID_PLAN)
         Planner.extract("特定消息内容ABC", llm)
         assert "特定消息内容ABC" in captured[0]
+
+    def test_missing_required_fields_raises_value_error(self):
+        llm = make_llm('{"true_intent": "x"}')  # 缺少 tasks 和 acceptance_criteria
+        with pytest.raises(ValueError, match="缺少必要字段"):
+            Planner.extract("任意消息", llm)
+
+    def test_empty_tasks_raises_value_error(self):
+        llm = make_llm('{"true_intent": "x", "acceptance_criteria": ["ok"], "tasks": []}')
+        with pytest.raises(ValueError, match="非空列表"):
+            Planner.extract("任意消息", llm)

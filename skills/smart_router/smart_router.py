@@ -25,7 +25,12 @@ _DIALOG_DIR = Path.home() / ".openclaw" / "smart-router"
 def _load(user_id: str) -> dict:
     _DIALOG_DIR.mkdir(parents=True, exist_ok=True)
     p = _DIALOG_DIR / f"{user_id}.json"
-    return json.loads(p.read_text()) if p.exists() else {"phase": "idle"}
+    if not p.exists():
+        return {"phase": "idle"}
+    state = json.loads(p.read_text())
+    if "results" in state:
+        state["results"] = {int(k): v for k, v in state["results"].items()}
+    return state
 
 
 def _save(user_id: str, state: dict) -> None:
@@ -62,6 +67,9 @@ def handle_message(text: str, user_id: str, ctx) -> None:
             _on_idle(text, user_id, state, ctx)
         elif phase in ("executing", "validating"):
             _run_pipeline(user_id, state, ctx)
+        elif phase == "done":
+            _reset(user_id)
+            _on_idle(text, user_id, {"phase": "idle"}, ctx)
     except Exception as e:
         ctx.reply(f"⚠️ 出错了：{e}\n输入「重置路由」清除状态后重试。")
         raise
