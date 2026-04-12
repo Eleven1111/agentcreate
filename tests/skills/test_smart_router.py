@@ -43,7 +43,6 @@ def get_handle(tmp_path, monkeypatch):
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-    import importlib
     import skills.smart_router.smart_router as sr_module
     monkeypatch.setattr(sr_module, "_DIALOG_DIR", tmp_path / "smart-router")
     return sr_module.handle_message

@@ -55,15 +55,13 @@ def handle_message(text: str, user_id: str, ctx) -> None:
         ctx.reply("✅ 已重置")
         return
 
-    state = _load(user_id)
     try:
+        state = _load(user_id)
         phase = state.get("phase", "idle")
         if phase == "idle":
             _on_idle(text, user_id, state, ctx)
-        elif phase == "executing":
-            _run_executor(user_id, state, ctx)
-        elif phase == "validating":
-            _run_validator(user_id, state, ctx)
+        elif phase in ("executing", "validating"):
+            _run_pipeline(user_id, state, ctx)
     except Exception as e:
         ctx.reply(f"⚠️ 出错了：{e}\n输入「重置路由」清除状态后重试。")
         raise
@@ -89,10 +87,40 @@ def _on_idle(text: str, user_id: str, state: dict, ctx) -> None:
         "suggestion": "",
     })
     _save(user_id, state)
-    _run_executor(user_id, state, ctx)
+    _run_pipeline(user_id, state, ctx)
 
 
-def _run_executor(user_id: str, state: dict, ctx) -> None:
+def _run_pipeline(user_id: str, state: dict, ctx) -> None:
+    """Execute → Validate loop. MAX_RETRIES caps iterations."""
+    while True:
+        _do_execute(user_id, state, ctx)
+        validation = _do_validate(user_id, state, ctx)
+
+        if validation["passed"]:
+            ctx.reply(f"✅ 验收通过（{validation['score']}分）\n\n{_merge_results(state['results'], state['plan'])}")
+            state["phase"] = "done"
+            _save(user_id, state)
+            return
+
+        if state["retries"] >= MAX_RETRIES:
+            ctx.reply(
+                f"⚠️ 已重试 {MAX_RETRIES} 次，当前得分 {validation['score']}，直接交付：\n\n"
+                f"{_merge_results(state['results'], state['plan'])}"
+            )
+            state["phase"] = "done"
+            _save(user_id, state)
+            return
+
+        state["retries"] += 1
+        state["retry_tasks"] = validation["failed_tasks"]
+        state["suggestion"] = validation.get("suggestion", "")
+        state["phase"] = "executing"
+        ctx.reply(f"🔄 得分 {validation['score']}，重试第 {state['retries']} 次...")
+        _save(user_id, state)
+
+
+def _do_execute(user_id: str, state: dict, ctx) -> None:
+    """Run one pass of executor over retry_tasks. Updates state['results'] in place."""
     plan = state["plan"]
     results = state.get("results", {})
     retry_tasks = state.get("retry_tasks", [t["id"] for t in plan["tasks"]])
@@ -108,35 +136,14 @@ def _run_executor(user_id: str, state: dict, ctx) -> None:
         results[task["id"]] = output
         ctx.reply(f"  ✓ {task['name']}")
 
-    state.update({"phase": "validating", "results": results})
+    state["results"] = results
+    state["phase"] = "validating"
     _save(user_id, state)
-    _run_validator(user_id, state, ctx)
 
 
-def _run_validator(user_id: str, state: dict, ctx) -> None:
-    plan = state["plan"]
-    results = state["results"]
-    validation = Validator.check(plan, results, ctx.llm)
-
-    if validation["passed"]:
-        ctx.reply(f"✅ 验收通过（{validation['score']}分）\n\n{_merge_results(results, plan)}")
-        state["phase"] = "done"
-    elif state["retries"] >= MAX_RETRIES:
-        ctx.reply(
-            f"⚠️ 已重试 {MAX_RETRIES} 次，当前得分 {validation['score']}，直接交付：\n\n"
-            f"{_merge_results(results, plan)}"
-        )
-        state["phase"] = "done"
-    else:
-        state["retries"] += 1
-        state["retry_tasks"] = validation["failed_tasks"]
-        state["suggestion"] = validation.get("suggestion", "")
-        state["phase"] = "executing"
-        ctx.reply(f"🔄 得分 {validation['score']}，重试第 {state['retries']} 次...")
-        _save(user_id, state)
-        _run_executor(user_id, state, ctx)
-
-    _save(user_id, state)
+def _do_validate(user_id: str, state: dict, ctx) -> dict:
+    """Run validator. Returns ValidationResult dict."""
+    return Validator.check(state["plan"], state["results"], ctx.llm)
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
