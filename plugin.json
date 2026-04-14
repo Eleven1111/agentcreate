@@ -1,0 +1,20 @@
+{
+  "name": "execute-plan",
+  "version": "1.0.0",
+  "description": "端到端 AI 辅助开发 Agent：需求对齐 → 生成计划 → 拓扑并行实现 → 验收打标。通过消息平台全程与用户交互，支持断点续跑。",
+  "author": {
+    "name": "meta11",
+    "url": "https://github.com/meta11"
+  },
+  "license": "MIT",
+  "keywords": [
+    "execute-plan",
+    "tdd",
+    "parallel-execution",
+    "agent",
+    "openclaw"
+  ],
+  "skills": [
+    "./skills/"
+  ]
+}

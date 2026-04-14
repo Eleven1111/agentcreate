@@ -6,7 +6,10 @@
   - Skill 只写业务逻辑，不感知平台，不管 LLM 厂商
 
 对话状态机：
-  idle → phase0_q → phase0_confirm → phase1_plan → phase2_exec → [blocked] → phase3_validate → done
+  idle → phase0_q → phase0_confirm → phase1_plan
+       → [phase1_review] → phase2_exec → [blocked] → phase3_validate → done
+
+phase1_review：计划验证发现疑似瞎编任务时，暂停让用户决策（删除/保留）。
 """
 import re
 import subprocess
@@ -18,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from tools.execute_plan.plan_parser import PlanParser
 from tools.execute_plan import state_manager as sm
 from tools.execute_plan.wave_executor import WaveExecutor
+from tools.execute_plan.plan_validator import validate_structure, validate_traceability
 
 _QUESTIONS = [
     "👋 我来帮你完成这个项目。先了解背景：\n\n**终端用户是谁？** 技术水平如何？日常工作流程是什么？",
@@ -46,6 +50,7 @@ def handle_message(text: str, user_id: str, ctx) -> None:
             "phase0_q":        _on_phase0_q,
             "phase0_confirm":  _on_phase0_confirm,
             "phase1_plan":     _on_phase1_plan,
+            "phase1_review":   _on_phase1_review,
             "phase2_exec":     _on_phase2_exec,
             "blocked":         _on_blocked,
             "phase3_validate": _on_phase3_validate,
@@ -90,6 +95,30 @@ def _on_phase0_confirm(text, user_id, state, ctx):
 
 def _on_phase1_plan(text, user_id, state, ctx):
     ctx.reply("计划生成中，请稍候...")
+
+
+def _on_phase1_review(text, user_id, state, ctx):
+    """用户对疑似瞎编任务的回应：删除 / 保留 / 其他意见。"""
+    plan_path = state["plan_path"]
+    uncovered = state.get("uncovered_tasks", [])
+
+    if any(kw in text for kw in ["删除", "remove", "不要", "去掉"]):
+        _prune_tasks(plan_path, uncovered)
+        ctx.reply(f"✅ 已删除 {len(uncovered)} 个无需求来源的任务，继续执行...")
+        state["phase"] = "phase2_exec"
+        _run_phase2(user_id, state, ctx)
+
+    elif any(kw in text for kw in ["保留", "keep", "没问题", "ok", "可以", "继续"]):
+        ctx.reply("✅ 保留所有任务，继续执行...")
+        state["phase"] = "phase2_exec"
+        _run_phase2(user_id, state, ctx)
+
+    else:
+        # 用户给出具体意见，追加到 answers 后重新生成
+        state["answers"].append(f"计划修订意见：{text}")
+        ctx.reply("收到修订意见，重新生成计划...")
+        state["phase"] = "phase1_plan"
+        _run_phase1(user_id, state, ctx)
 
 
 def _on_phase2_exec(text, user_id, state, ctx):
@@ -173,9 +202,49 @@ Plan 格式要求（严格遵守）：
     plan_path = f"docs/plans/{date.today().isoformat()}-project.md"
     Path("docs/plans").mkdir(parents=True, exist_ok=True)
     Path(plan_path).write_text(plan_content, encoding="utf-8")
+    state["plan_path"] = plan_path
 
-    state.update({"plan_path": plan_path, "phase": "phase2_exec"})
-    ctx.reply(f"📋 计划已生成：`{plan_path}`\n开始并行执行...")
+    # ── Phase 1.5: 结构验证 ──────────────────────────────────────────────────
+    parser = PlanParser(plan_path)
+    struct_issues = validate_structure(parser.tasks)
+    if struct_issues:
+        ctx.reply(
+            "⚠️ 生成的计划结构有问题，正在重新生成：\n"
+            + "\n".join(f"  · {i}" for i in struct_issues)
+        )
+        _run_phase1(user_id, state, ctx)
+        return
+
+    # ── Phase 1.5: 需求追溯 ──────────────────────────────────────────────────
+    requirements_text = (
+        "\n".join(answers)
+        + "\n\n确认方案：\n"
+        + state.get("proposals", "")
+    )
+    tracing = validate_traceability(parser.tasks, requirements_text, ctx.llm)
+
+    if tracing["uncovered"]:
+        uncovered_names = [
+            f"Task {tid}: {t.name} — {tracing['reasons'].get(str(tid), '未说明')}"
+            for tid in tracing["uncovered"]
+            if (t := parser.get_task(tid))
+        ]
+        ctx.reply(
+            f"⚠️ 发现 {len(tracing['uncovered'])} 个任务找不到需求来源（疑似 AI 自行添加）：\n"
+            + "\n".join(f"  · {n}" for n in uncovered_names)
+            + "\n\n输入「删除」移除这些任务，「保留」全部保留，或描述你的修订意见。"
+        )
+        state.update({
+            "phase": "phase1_review",
+            "uncovered_tasks": tracing["uncovered"],
+        })
+        return
+
+    ctx.reply(
+        f"📋 计划验证通过！共 {len(parser.tasks)} 个任务，全部有需求来源。\n"
+        f"文件：`{plan_path}`\n开始并行执行..."
+    )
+    state["phase"] = "phase2_exec"
     _run_phase2(user_id, state, ctx)
 
 
@@ -274,6 +343,30 @@ def _run_phase3(user_id, state, ctx):
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
+
+def _prune_tasks(plan_path: str, task_ids: list[int]) -> None:
+    """从 plan.md 中物理删除指定任务块，并同步修正其他任务的 depends_on 引用。"""
+    text = Path(plan_path).read_text(encoding="utf-8")
+    sections = re.split(r"(?=^## Task \d+:)", text, flags=re.MULTILINE)
+    remove_set = set(task_ids)
+    kept = []
+    for section in sections:
+        m = re.match(r"^## Task (\d+):", section.strip())
+        if m and int(m.group(1)) in remove_set:
+            continue
+        kept.append(section)
+
+    pruned_text = "".join(kept)
+
+    # 清除 depends_on 中对已删除任务的引用
+    def clean_deps(match):
+        raw = match.group(1)
+        ids = [x.strip() for x in raw.split(",") if x.strip().isdigit()]
+        cleaned = [x for x in ids if int(x) not in remove_set]
+        return f"depends_on: [{', '.join(cleaned)}]"
+
+    pruned_text = re.sub(r"depends_on:\s*\[([^\]]*)\]", clean_deps, pruned_text)
+    Path(plan_path).write_text(pruned_text, encoding="utf-8")
 
 def _run_gate() -> dict:
     r = subprocess.run(["python", "-m", "pytest", "tests/", "-v", "--tb=short"],
